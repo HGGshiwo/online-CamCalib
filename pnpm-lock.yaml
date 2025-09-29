@@ -11,6 +11,12 @@ importers:
       '@techstark/opencv-js':
         specifier: 4.11.0-release.1
         version: 4.11.0-release.1
+      opencv-ts:
+        specifier: ^1.3.6
+        version: 1.3.6
+      opencv.js:
+        specifier: ^1.2.1
+        version: 1.2.1
       react:
         specifier: ^19.1.1
         version: 19.1.1
@@ -915,6 +921,12 @@ packages:
   node-releases@2.0.21:
     resolution: {integrity: sha512-5b0pgg78U3hwXkCM8Z9b2FJdPZlr9Psr9V2gQPESdGHqbntyFJKFW4r5TeWGFzafGY3hzs1JC62VEQMbl1JFkw==}
 
+  opencv-ts@1.3.6:
+    resolution: {integrity: sha512-8iG+ujpzsvc5W7vP0WH0TFUOODZFulp7SBzy2Av2xXmHrHVKw7HWKyutLxmstAkNa7nD6BgnDrEVxTsI/mDkeQ==}
+
+  opencv.js@1.2.1:
+    resolution: {integrity: sha512-+ji5Pk3eyz+RRSeZr2kLZNJpjsKoGyPJOjFWng7+Cuq9ylHakBqJMxDGlBW1+qdju3k8DadWOiHJ6JaF28UpKA==}
+
   optionator@0.9.4:
     resolution: {integrity: sha512-6IpQ7mKUxRcZNLIObR0hz7lxsapSSIYNZJwXPGeF0mTVqGKFIXj1DQcMoT22S3ROcLyY/rz0PWaWZ9ayWmad9g==}
     engines: {node: '>= 0.8.0'}
@@ -1050,6 +1062,11 @@ packages:
     peerDependencies:
       eslint: ^8.57.0 || ^9.0.0
       typescript: '>=4.8.4 <6.0.0'
+
+  typescript@4.9.5:
+    resolution: {integrity: sha512-1FXk9E2Hm+QzZQ7z+McJiHL4NW1F2EzMu9Nq9i3zAaGqibafqYwCVU6WyWAuyQRRzOlxou8xZSyXLEN8oKj24g==}
+    engines: {node: '>=4.2.0'}
+    hasBin: true
 
   typescript@5.8.3:
     resolution: {integrity: sha512-p1diW6TqL9L07nNxvRMM7hMMw4c5XOo/1ibL4aAIGmSAt9slTE1Xgw5KWuof2uTOvCg9BY7ZRi+GaF+7sfgPeQ==}
@@ -1936,6 +1953,12 @@ snapshots:
 
   node-releases@2.0.21: {}
 
+  opencv-ts@1.3.6:
+    dependencies:
+      typescript: 4.9.5
+
+  opencv.js@1.2.1: {}
+
   optionator@0.9.4:
     dependencies:
       deep-is: 0.1.4
@@ -2071,6 +2094,8 @@ snapshots:
       typescript: 5.8.3
     transitivePeerDependencies:
       - supports-color
+
+  typescript@4.9.5: {}
 
   typescript@5.8.3: {}
 

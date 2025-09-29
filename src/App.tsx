@@ -1,8 +1,15 @@
 import './App.css'
-
 import React, { useEffect, useState } from "react";
+import Camera from './models/camera';
 
 function App() {
+
+
+  const [error, setError] = useState<string | null>(null);
+  const [guidance, setGuidance] = useState<string | null>(null);
+  const [devices, setDevices] = useState<MediaDeviceInfo[]>([]);
+  const [selectedDeviceId, setSelectedDeviceId] = useState<string | null>(null);
+  const videoRef = React.useRef<HTMLVideoElement>(null);
 
   useEffect(()=>{
     let camera = new Camera({
@@ -10,8 +17,14 @@ function App() {
       onError: (err) => setError(err),
       onGuidance: (tip) => setGuidance(tip)
     })
+    camera.init().then(()=>{
+      requestAnimationFrame(()=>{
+        camera.draw()
+      })
+    })
 
   }, [])
+
   return (
     <div>
       {error && <div style={{ color: "red" }}>{error}</div>}

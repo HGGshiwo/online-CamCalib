@@ -1,4 +1,5 @@
-import * as cv from "@techstark/opencv-js";
+import cv from "opencv.js"
+
 type onReadyCb = (ready: boolean) => any
 type onErrorCb = (error: string) => any
 type onGuidanceCb = (guidance: string) => any;
@@ -38,7 +39,7 @@ class Camera {
   objectPoints: number[][][] = [];
   imagePoints: number[][] = [];
   captured: number = 0;
-  
+
   constructor(config: CameraConfig) {
     this.devices = []
     this.selectedDeviceId = ""
@@ -69,10 +70,9 @@ class Camera {
     this.objp = this.prepareObjectPoints();
   }
 
-  async startMainLoop() {
+  async init() {
     await this.getDevicesWithPermission()
     await this.startCamera()
-    await this.mainLoop()
   }
 
   async getDevicesWithPermission() {
@@ -118,7 +118,7 @@ class Camera {
   }
 
   // 角度分析函数
-  analyzePose(rvec: cv.Mat, tvec: cv.Mat) {
+  analyzePose(rvec: any, tvec: any) {
     // rvec: 旋转向量
     // tvec: 平移向量
     // 旋转向量转欧拉角
@@ -175,6 +175,7 @@ class Camera {
   }
 
   draw() {
+    if (this.video.videoHeight == 0 || this.video.videoWidth == 0) return
     this.canvas.width = this.video.videoWidth;
     this.canvas.height = this.video.videoHeight;
     const ctx = this.canvas.getContext("2d");
@@ -247,12 +248,6 @@ class Camera {
       objMat.delete(); imgMat.delete(); rvec.delete(); tvec.delete();
     }
     src.delete(); gray.delete(); corners.delete();
-  }
-
-  mainLoop() {
-    while (true) {
-      this.draw()
-    }
   }
 }
 
