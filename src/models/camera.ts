@@ -1,27 +1,30 @@
-import cv from "opencv.js"
+import type { OpenCV } from "@opencvjs/types";
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+const cv = (await (window as any).cv) as typeof OpenCV;
 
-type onReadyCb = (ready: boolean) => any
-type onErrorCb = (error: string) => any
-type onGuidanceCb = (guidance: string) => any;
+type onReadyCb = (ready: boolean) => unknown;
+type onErrorCb = (error: string) => unknown;
+type onGuidanceCb = (guidance: string) => unknown;
 
 type CameraConfig = {
   onError?: onErrorCb;
   onReady?: onReadyCb;
   onGuidance?: onGuidanceCb;
   canvas: HTMLCanvasElement;
-}
+  fps: number;
+};
 
 type BlockConfig = {
   colNum?: number;
   rowNum?: number;
   squareSize: number;
-}
+};
 type Point = {
-  pitch: number,
-  yaw: number,
-  roll: number,
-  distance: number
-}
+  pitch: number;
+  yaw: number;
+  roll: number;
+  distance: number;
+};
 class Camera {
   devices: MediaDeviceInfo[];
   selectedDeviceId: string;
@@ -31,26 +34,31 @@ class Camera {
   video: HTMLVideoElement;
   stream: MediaStream | undefined;
   canvas: HTMLCanvasElement; // 需要显示的video元素
-  colNum: number = 0;
-  rowNum: number = 0;
-  squareSize: number = 0;
+  ctx: CanvasRenderingContext2D | null;
+  colNum: number = 10;
+  rowNum: number = 7;
+  squareSize: number = 1;
   objp: number[][] = [];
   anglesHist: Point[] = [];
   objectPoints: number[][][] = [];
   imagePoints: number[][] = [];
   captured: number = 0;
+  fps: number;
+  lastDrawTime: number = 0;
 
   constructor(config: CameraConfig) {
-    this.devices = []
-    this.selectedDeviceId = ""
-    this.onError = config.onError
-    this.onReady = config.onReady
+    this.devices = [];
+    this.selectedDeviceId = "";
+    this.onError = config.onError;
+    this.onReady = config.onReady;
     this.video = document.createElement("video");
     this.video.autoplay = true;
     this.video.playsInline = true;
     this.video.muted = true;
     this.stream = undefined;
     this.canvas = config.canvas;
+    this.ctx = this.canvas.getContext("2d", { willReadFrequently: true });
+    this.fps = config.fps || 10;
   }
 
   prepareObjectPoints() {
@@ -61,7 +69,7 @@ class Camera {
       }
     }
     return objp;
-  };
+  }
 
   set blockConfig(config: BlockConfig) {
     this.colNum = config.colNum || this.colNum;
@@ -71,8 +79,8 @@ class Camera {
   }
 
   async init() {
-    await this.getDevicesWithPermission()
-    await this.startCamera()
+    await this.getDevicesWithPermission();
+    await this.startCamera();
   }
 
   async getDevicesWithPermission() {
@@ -86,19 +94,19 @@ class Camera {
       this.devices = videoDevices;
       if (videoDevices.length > 0) {
         this.selectedDeviceId = videoDevices[0].deviceId;
+      } else {
+        this.onError?.("未找到摄像头设备");
       }
-      else {
-        this.onError && this.onError("未找到摄像头设备");
-      }
-    } catch (err) {
-      this.onError && this.onError("无法获取摄像头设备");
+    } catch (error) {
+      console.error(error);
+      this.onError?.("无法获取摄像头设备");
     }
   }
 
   async startCamera() {
     // 打开相机
-    this.onReady && this.onReady(false);
-    this.stopStream()
+    this.onReady?.(false);
+    this.stopStream();
     try {
       const stream = await navigator.mediaDevices.getUserMedia({
         video: { deviceId: { exact: this.selectedDeviceId! } },
@@ -106,23 +114,27 @@ class Camera {
       this.stream = stream;
       if (this.video) {
         this.video.srcObject = stream;
+        this.video.addEventListener("canplay", () => {
+          this.video.play();
+        });
       }
-      this.onReady && this.onReady(true);
-    } catch (err) {
-      this.onError && this.onError("无法打开摄像头");
+      this.onReady?.(true);
+    } catch (error) {
+      console.error(error);
+      this.onError?.("无法打开摄像头");
     }
   }
 
   stopStream() {
-    this.stream?.getTracks().forEach((track) => track.stop())
+    this.stream?.getTracks().forEach((track) => track.stop());
   }
 
   // 角度分析函数
-  analyzePose(rvec: any, tvec: any) {
+  analyzePose(rvec: OpenCV.Mat, tvec: OpenCV.Mat) {
     // rvec: 旋转向量
     // tvec: 平移向量
     // 旋转向量转欧拉角
-    let rotMat = new cv.Mat();
+    const rotMat = new cv.Mat();
     cv.Rodrigues(rvec, rotMat);
     // 取旋转矩阵
     // 欧拉角（假设摄像头坐标系，z轴朝前，x右，y下）
@@ -130,12 +142,15 @@ class Camera {
     // yaw:   rotMat.data64F[6] = rotMat.at(2,0)
     // roll:  rotMat.data64F[3] = rotMat.at(1,0)
     // 这里用简单近似
-    let sy = Math.sqrt(rotMat.data64F[0] * rotMat.data64F[0] + rotMat.data64F[3] * rotMat.data64F[3]);
-    let singular = sy < 1e-6;
+    const sy = Math.sqrt(
+      rotMat.data64F[0] * rotMat.data64F[0] +
+        rotMat.data64F[3] * rotMat.data64F[3]
+    );
+    const singular = sy < 1e-6;
     let x, y, z;
     if (!singular) {
       x = Math.atan2(rotMat.data64F[7], rotMat.data64F[8]); // pitch
-      y = Math.atan2(-rotMat.data64F[6], sy);               // yaw
+      y = Math.atan2(-rotMat.data64F[6], sy); // yaw
       z = Math.atan2(rotMat.data64F[3], rotMat.data64F[0]); // roll
     } else {
       x = Math.atan2(-rotMat.data64F[5], rotMat.data64F[4]);
@@ -145,14 +160,16 @@ class Camera {
     rotMat.delete();
 
     // tvec: 距离
-    const distance = Math.sqrt(tvec.data64F[0] ** 2 + tvec.data64F[1] ** 2 + tvec.data64F[2] ** 2);
+    const distance = Math.sqrt(
+      tvec.data64F[0] ** 2 + tvec.data64F[1] ** 2 + tvec.data64F[2] ** 2
+    );
 
     // 返回角度（度）
     return {
-      pitch: x * 180 / Math.PI,
-      yaw: y * 180 / Math.PI,
-      roll: z * 180 / Math.PI,
-      distance
+      pitch: (x * 180) / Math.PI,
+      yaw: (y * 180) / Math.PI,
+      roll: (z * 180) / Math.PI,
+      distance,
     };
   }
 
@@ -161,7 +178,9 @@ class Camera {
     // history: [{pitch, yaw, roll, ...}]
     // 计算与历史最大差值
     const threshold = 10; // 10度为“有意义的新角度”
-    let maxPitchDiff = 0, maxYawDiff = 0, maxRollDiff = 0;
+    let maxPitchDiff = 0,
+      maxYawDiff = 0,
+      maxRollDiff = 0;
     for (const h of history) {
       maxPitchDiff = Math.max(maxPitchDiff, Math.abs(newAngle.pitch - h.pitch));
       maxYawDiff = Math.max(maxYawDiff, Math.abs(newAngle.yaw - h.yaw));
@@ -175,22 +194,23 @@ class Camera {
   }
 
   draw() {
-    if (this.video.videoHeight == 0 || this.video.videoWidth == 0) return
+    if (this.video.videoHeight == 0 || this.video.videoWidth == 0) return;
+    const now = performance.now();
+    if (now - this.lastDrawTime < 1000 / this.fps) return;
+    this.lastDrawTime = now;
     this.canvas.width = this.video.videoWidth;
     this.canvas.height = this.video.videoHeight;
-    const ctx = this.canvas.getContext("2d");
-    ctx!.drawImage(this.video, 0, 0, this.canvas.width, this.canvas.height);
-
-    let src = cv.imread(this.canvas);
-    let gray = new cv.Mat();
+    
+    this.ctx!.drawImage(this.video, 0, 0, this.canvas.width, this.canvas.height);
+    const src = cv.imread(this.canvas);
+    const gray = new cv.Mat();
     cv.cvtColor(src, gray, cv.COLOR_RGBA2GRAY);
-
-    let corners = new cv.Mat();
-    let found = cv.findChessboardCorners(
+    const corners = new cv.Mat();
+    const found = cv.findChessboardCornersSB(
       gray,
       new cv.Size(this.colNum, this.rowNum),
       corners,
-      cv.CALIB_CB_ADAPTIVE_THRESH + cv.CALIB_CB_NORMALIZE_IMAGE
+      cv.CALIB_CB_NORMALIZE_IMAGE + cv.CALIB_CB_EXHAUSTIVE
     );
 
     // 3. 绘制角点
@@ -201,56 +221,77 @@ class Camera {
         corners,
         new cv.Size(11, 11),
         new cv.Size(-1, -1),
-        new cv.TermCriteria(cv.TermCriteria_EPS + cv.TermCriteria_MAX_ITER, 30, 0.001)
+        new cv.TermCriteria(
+          cv.TermCriteria_EPS + cv.TermCriteria_MAX_ITER,
+          30,
+          0.001
+        )
       );
       // 绘制
       for (let i = 0; i < corners.rows; i++) {
         const x = corners.data32F[i * 2];
         const y = corners.data32F[i * 2 + 1];
         // 用canvas画圈
-        ctx!.beginPath();
-        ctx!.arc(x, y, 5, 0, 2 * Math.PI);
-        ctx!.fillStyle = 'red';
-        ctx!.fill();
+        this.ctx!.beginPath();
+        this.ctx!.arc(x, y, 5, 0, 2 * Math.PI);
+        this.ctx!.fillStyle = "red";
+        this.ctx!.fill();
       }
 
-      // 姿态估计
-      let objMat = cv.matFromArray(this.colNum * this.rowNum, 1, cv.CV_32FC3, this.objp.flat());
-      let imgMat = cv.matFromArray(this.colNum * this.rowNum, 1, cv.CV_32FC2, Array.from(corners.data32F));
-      let rvec = new cv.Mat();
-      let tvec = new cv.Mat();
-      // 若还没有标定，用初始值（常用 fx=fy=img.width, cx=img.width/2, cy=img.height/2），畸变为零
-      let cameraMatrix, distCoeffs;
-      const { width, height } = gray.size();
-      cameraMatrix = cv.matFromArray(3, 3, cv.CV_64FC1, [
-        height, 0, width / 2,
-        0, height, height / 2,
-        0, 0, 1
-      ]);
-      distCoeffs = cv.Mat.zeros(1, 5, cv.CV_64FC1);
-      cv.solvePnP(objMat, imgMat, cameraMatrix, distCoeffs, rvec, tvec);
+      // // 姿态估计
+      // const objMat = cv.matFromArray(
+      //   this.colNum * this.rowNum,
+      //   1,
+      //   cv.CV_32FC3,
+      //   this.objp.flat()
+      // );
+      // const imgMat = cv.matFromArray(
+      //   this.colNum * this.rowNum,
+      //   1,
+      //   cv.CV_32FC2,
+      //   Array.from(corners.data32F)
+      // );
+      // const rvec = new cv.Mat();
+      // const tvec = new cv.Mat();
+      // // 若还没有标定，用初始值（常用 fx=fy=img.width, cx=img.width/2, cy=img.height/2），畸变为零
+      // const { width, height } = gray.size();
+      // const cameraMatrix = cv.matFromArray(3, 3, cv.CV_64FC1, [
+      //   height,
+      //   0,
+      //   width / 2,
+      //   0,
+      //   height,
+      //   height / 2,
+      //   0,
+      //   0,
+      //   1,
+      // ]);
+      // const distCoeffs = cv.Mat.zeros(1, 5, cv.CV_64FC1);
+      // cv.solvePnP(objMat, imgMat, cameraMatrix, distCoeffs, rvec, tvec);
 
-      // 分析角度
-      const angles = this.analyzePose(rvec, tvec);
-      // 给出建议
-      const tip = this.getGuidance(angles, this.anglesHist);
-      this.onGuidance?.(tip);
+      // // 分析角度
+      // const angles = this.analyzePose(rvec, tvec);
+      // // 给出建议
+      // const tip = this.getGuidance(angles, this.anglesHist);
+      // this.onGuidance?.(tip);
 
-      // 如果角度与历史差异大，才采集
-      if (tip === "当前角度合适，继续采集!") {
-        this.objectPoints.push(this.objp);
-        this.imagePoints.push(Array.from(corners.data32F));
-        this.anglesHist.push(angles);
-        this.captured++;
-      }
-
-      // 释放
-      objMat.delete(); imgMat.delete(); rvec.delete(); tvec.delete();
+      // // 如果角度与历史差异大，才采集
+      // if (tip === "当前角度合适，继续采集!") {
+      //   this.objectPoints.push(this.objp);
+      //   this.imagePoints.push(Array.from(corners.data32F));
+      //   this.anglesHist.push(angles);
+      //   this.captured++;
+      // }
+      // // 释放
+      // objMat.delete();
+      // imgMat.delete();
+      // rvec.delete();
+      // tvec.delete();
     }
-    src.delete(); gray.delete(); corners.delete();
+    src.delete();
+    gray.delete();
+    corners.delete();
   }
 }
-
-
 
 export default Camera;
