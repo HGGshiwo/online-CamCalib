@@ -1,4 +1,5 @@
 import type { OpenCV } from "@opencvjs/types";
+import { createTrigger } from "./utils";
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 const cv = (await (window as any).cv) as typeof OpenCV;
 
@@ -11,7 +12,7 @@ type CameraConfig = {
   onReady?: onReadyCb;
   onGuidance?: onGuidanceCb;
   canvas: HTMLCanvasElement;
-  fps: number;
+  fps?: number;
 };
 
 type BlockConfig = {
@@ -38,13 +39,16 @@ class Camera {
   colNum: number = 10;
   rowNum: number = 7;
   squareSize: number = 1;
-  objp: number[][] = [];
+
   anglesHist: Point[] = [];
-  objectPoints: number[][][] = [];
-  imagePoints: number[][] = [];
-  captured: number = 0;
   fps: number;
-  lastDrawTime: number = 0;
+  trigger: ReturnType<typeof createTrigger>;
+  prevGray: OpenCV.Mat | null;
+  prevCorners: OpenCV.Mat | null;
+  cameraMatrix: OpenCV.Mat | null;
+  objMat: OpenCV.Mat | null;
+  objpointsMat: OpenCV.MatVector;
+  imgpointsMat: OpenCV.MatVector;
 
   constructor(config: CameraConfig) {
     this.devices = [];
@@ -59,6 +63,14 @@ class Camera {
     this.canvas = config.canvas;
     this.ctx = this.canvas.getContext("2d", { willReadFrequently: true });
     this.fps = config.fps || 10;
+    this.trigger = createTrigger(this.fps);
+    this.prevGray = null;
+    this.prevCorners = null;
+    this.cameraMatrix = null;
+    this.objMat = null;
+
+    this.objpointsMat = new cv.MatVector();
+    this.imgpointsMat = new cv.MatVector();
   }
 
   prepareObjectPoints() {
@@ -75,11 +87,17 @@ class Camera {
     this.colNum = config.colNum || this.colNum;
     this.rowNum = config.rowNum || this.rowNum;
     this.squareSize = config.squareSize || this.squareSize;
-    this.objp = this.prepareObjectPoints();
+    this.objMat = cv.matFromArray(
+      this.colNum * this.rowNum,
+      3,
+      cv.CV_32F,
+      this.prepareObjectPoints().flat()
+    );
   }
 
-  async init() {
+  async init(blockConfig?: BlockConfig) {
     await this.getDevicesWithPermission();
+    this.blockConfig = blockConfig || { squareSize: 1, colNum: 10, rowNum: 7 };
     await this.startCamera();
   }
 
@@ -193,18 +211,20 @@ class Camera {
     return "当前角度合适，继续采集!";
   }
 
-  draw() {
-    if (this.video.videoHeight == 0 || this.video.videoWidth == 0) return;
-    const now = performance.now();
-    if (now - this.lastDrawTime < 1000 / this.fps) return;
-    this.lastDrawTime = now;
-    this.canvas.width = this.video.videoWidth;
-    this.canvas.height = this.video.videoHeight;
-    
-    this.ctx!.drawImage(this.video, 0, 0, this.canvas.width, this.canvas.height);
-    const src = cv.imread(this.canvas);
-    const gray = new cv.Mat();
-    cv.cvtColor(src, gray, cv.COLOR_RGBA2GRAY);
+  drawChessboardCorners(corners: OpenCV.Mat) {
+    // 绘制
+    for (let i = 0; i < corners.rows; i++) {
+      const x = corners.data32F[i * 2];
+      const y = corners.data32F[i * 2 + 1];
+      // 用canvas画圈
+      this.ctx!.beginPath();
+      this.ctx!.arc(x, y, 5, 0, 2 * Math.PI);
+      this.ctx!.fillStyle = "red";
+      this.ctx!.fill();
+    }
+  }
+
+  findChessboardCorners(gray: OpenCV.Mat) {
     const corners = new cv.Mat();
     const found = cv.findChessboardCornersSB(
       gray,
@@ -212,8 +232,6 @@ class Camera {
       corners,
       cv.CALIB_CB_NORMALIZE_IMAGE + cv.CALIB_CB_EXHAUSTIVE
     );
-
-    // 3. 绘制角点
     if (found) {
       // 可以亚像素优化
       cv.cornerSubPix(
@@ -227,70 +245,179 @@ class Camera {
           0.001
         )
       );
-      // 绘制
-      for (let i = 0; i < corners.rows; i++) {
-        const x = corners.data32F[i * 2];
-        const y = corners.data32F[i * 2 + 1];
-        // 用canvas画圈
-        this.ctx!.beginPath();
-        this.ctx!.arc(x, y, 5, 0, 2 * Math.PI);
-        this.ctx!.fillStyle = "red";
-        this.ctx!.fill();
-      }
+    }
+    return { found, corners };
+  }
 
-      // // 姿态估计
-      // const objMat = cv.matFromArray(
-      //   this.colNum * this.rowNum,
-      //   1,
-      //   cv.CV_32FC3,
-      //   this.objp.flat()
-      // );
-      // const imgMat = cv.matFromArray(
-      //   this.colNum * this.rowNum,
-      //   1,
-      //   cv.CV_32FC2,
-      //   Array.from(corners.data32F)
-      // );
+  calcOpticalFlow(prevGray: OpenCV.Mat, gray: OpenCV.Mat, prevPts: OpenCV.Mat) {
+    const nextPts = new cv.Mat();
+    const status = new cv.Mat();
+    const err = new cv.Mat();
+
+    const winSize = new cv.Size(21, 21);
+    const maxLevel = 3;
+    const criteria = new cv.TermCriteria(
+      cv.TermCriteria_EPS | cv.TermCriteria_COUNT,
+      30,
+      0.01
+    );
+
+    cv.calcOpticalFlowPyrLK(
+      prevGray, // 上一帧灰度图
+      gray, // 当前帧灰度图
+      prevPts, // 上一帧特征点
+      nextPts, // 输出：当前帧特征点
+      status, // 输出：每个点的跟踪状态（1=成功，0=失败）
+      err, // 输出：每个点的误差
+      winSize,
+      maxLevel,
+      criteria
+    );
+    let error = 0;
+    // 处理跟踪结果
+    for (let i = 0; i < status.rows; i++) {
+      if (status.data[i] === 1) {
+        // nextPts.data32F[i*2], nextPts.data32F[i*2+1] 是新位置
+        error += err.data[i];
+      } else {
+        error += Infinity;
+      }
+    }
+    // 释放内存
+    status.delete();
+    err.delete();
+    return { error, nextPts };
+  }
+
+  calibrateCamera(imageSize: OpenCV.Size) {
+    const cameraMatrix = new cv.Mat();
+    const distCoeffs = new cv.Mat();
+    const rvecs = new cv.MatVector();
+    const tvecs = new cv.MatVector();
+    const stdDeviationsIntrinsics = new cv.Mat();
+    const stdDeviationsExtrinsics = new cv.Mat();
+    const perViewErrors = new cv.Mat();
+    console.log( this.objpointsMat.get(0).size(), this.imgpointsMat.get(0).size());
+    
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    (cv as any).calibrateCameraExtended(
+      this.objpointsMat,
+      this.imgpointsMat,
+      imageSize,
+      cameraMatrix,
+      distCoeffs,
+      rvecs,
+      tvecs,
+      stdDeviationsIntrinsics,
+      stdDeviationsExtrinsics,
+      perViewErrors,
+      cv.CALIB_FIX_K4 | cv.CALIB_FIX_K5,
+    );
+
+    console.log("相机内参:", cameraMatrix.data64F);
+    console.log("畸变系数:", distCoeffs.data64F);
+  }
+
+  draw() {
+    if (this.video.videoHeight == 0 || this.video.videoWidth == 0) return;
+    if (!this.trigger()) return;
+
+    this.canvas.width = this.video.videoWidth;
+    this.canvas.height = this.video.videoHeight;
+
+    this.ctx!.drawImage(
+      this.video,
+      0,
+      0,
+      this.canvas.width,
+      this.canvas.height
+    );
+    const src = cv.imread(this.canvas);
+    const gray = new cv.Mat();
+    cv.cvtColor(src, gray, cv.COLOR_RGBA2GRAY);
+    let corners;
+
+    // if (this.prevGray !== null && this.prevCorners !== null) {
+    //   // 尝试光流法追踪
+    //   const { error, nextPts } = this.calcOpticalFlow(this.prevGray, gray, this.prevCorners);
+    //   console.log("使用光流法追踪，误差:", error);
+    //   if (error < 20) {
+    //     corners = nextPts;
+
+    //   }
+    // }
+
+    if (!corners) {
+      const out = this.findChessboardCorners(gray);
+      if (out.found) {
+        corners = out.corners;
+      }
+    }
+    this.prevCorners?.delete();
+    this.prevCorners = null;
+    this.prevGray?.delete();
+    this.prevGray = null;
+
+    // 3. 绘制角点
+    if (corners) {
+      this.prevCorners = corners;
+      this.prevGray = gray;
+      this.drawChessboardCorners(corners);
+
+      // 姿态估计
+      this.objpointsMat.push_back(this.objMat!.clone());
+      const imgMat = cv.matFromArray(
+        this.colNum * this.rowNum,
+        2,
+        cv.CV_32F,
+        Array.from(corners.data32F)
+      );
+      this.imgpointsMat.push_back(imgMat);
+      if(this.objpointsMat.size() >= 15){
+        this.calibrateCamera(gray.size());
+      }
       // const rvec = new cv.Mat();
       // const tvec = new cv.Mat();
       // // 若还没有标定，用初始值（常用 fx=fy=img.width, cx=img.width/2, cy=img.height/2），畸变为零
       // const { width, height } = gray.size();
-      // const cameraMatrix = cv.matFromArray(3, 3, cv.CV_64FC1, [
-      //   height,
-      //   0,
-      //   width / 2,
-      //   0,
-      //   height,
-      //   height / 2,
-      //   0,
-      //   0,
-      //   1,
-      // ]);
-      // const distCoeffs = cv.Mat.zeros(1, 5, cv.CV_64FC1);
-      // cv.solvePnP(objMat, imgMat, cameraMatrix, distCoeffs, rvec, tvec);
+      // if (this.cameraMatrix === null) {
+      //   this.cameraMatrix = cv.matFromArray(3, 3, cv.CV_64FC1, [
+      //     height,
+      //     0,
+      //     width / 2,
+      //     0,
+      //     height,
+      //     height / 2,
+      //     0,
+      //     0,
+      //     1,
+      //   ]);
+      // }
 
-      // // 分析角度
+      // const distCoeffs = cv.Mat.zeros(1, 5, cv.CV_64FC1);
+      // console.log(objMat.size(), imgMat.size(), this.cameraMatrix?.size(), distCoeffs.size(), rvec.size(), tvec.size());
+      // cv.solvePnP(objMat, imgMat, this.cameraMatrix, distCoeffs, rvec, tvec);
+
+      // // // 分析角度
       // const angles = this.analyzePose(rvec, tvec);
-      // // 给出建议
+      // // // 给出建议
       // const tip = this.getGuidance(angles, this.anglesHist);
       // this.onGuidance?.(tip);
-
-      // // 如果角度与历史差异大，才采集
+      // // // 如果角度与历史差异大，才采集
       // if (tip === "当前角度合适，继续采集!") {
       //   this.objectPoints.push(this.objp);
       //   this.imagePoints.push(Array.from(corners.data32F));
       //   this.anglesHist.push(angles);
       //   this.captured++;
       // }
-      // // 释放
+      // 释放
       // objMat.delete();
       // imgMat.delete();
       // rvec.delete();
       // tvec.delete();
     }
     src.delete();
-    gray.delete();
-    corners.delete();
   }
 }
 
